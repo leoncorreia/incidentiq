@@ -26,6 +26,63 @@ _DB_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Broader than _DB_RE: narrative often says "pool", "timeout", "saturation" without naming Postgres.
+_DB_CONTEXT_RE = re.compile(
+    r"\b("
+    r"postgres|postgresql|sql\b|database|\bdb\b|db pool|connection pool|pool|connections?|"
+    r"timeout|timeouts|saturation|exhaust|concurr|jdbc|orm|query latency"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _analysis_text_blobs(analysis: Dict[str, Any]) -> List[str]:
+    """Collect free-text fields from the saved analysis for keyword / grounding search."""
+    out: List[str] = []
+    for key in ("root_cause", "blast_radius", "suggested_fix", "confidence"):
+        v = analysis.get(key)
+        if isinstance(v, str) and v.strip():
+            out.append(v.strip())
+    mit = analysis.get("recommended_mitigation")
+    if isinstance(mit, dict):
+        for k in ("immediate_mitigation", "short_term_fix", "long_term_prevention"):
+            s = mit.get(k)
+            if isinstance(s, str) and s.strip():
+                out.append(s.strip())
+    for svc in analysis.get("affected_services") or []:
+        if isinstance(svc, str) and svc.strip():
+            out.append(svc.strip())
+    for ev in analysis.get("timeline") or []:
+        if isinstance(ev, dict):
+            for k in ("event", "time", "timestamp", "detail"):
+                s = ev.get(k)
+                if isinstance(s, str) and s.strip():
+                    out.append(s.strip())
+    for e in analysis.get("evidence") or []:
+        if isinstance(e, dict):
+            label = str(e.get("source") or e.get("type") or "").strip()
+            detail = str(e.get("detail") or "").strip()
+            if label or detail:
+                out.append(f"{label}: {detail}".strip(": ").strip())
+    return out
+
+
+def _db_grounding_from_analysis(analysis: Dict[str, Any], limit: int = 5) -> List[str]:
+    """Lines from the saved analysis that support a DB / pool / timeout narrative."""
+    seen: set[str] = set()
+    found: List[str] = []
+    for blob in _analysis_text_blobs(analysis):
+        if not _DB_CONTEXT_RE.search(blob):
+            continue
+        key = blob[:500]
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(blob if len(blob) <= 400 else blob[:397] + "…")
+        if len(found) >= limit:
+            break
+    return found
+
 
 def _wants_next_steps(q: str) -> bool:
     return any(
@@ -189,24 +246,41 @@ class FollowUpChatOrchestrator:
         elif _DB_RE.search(q):
             evidence = analysis.get("evidence", [])
             db_evidence = [
-                e.get("detail", "")
+                str(e.get("detail", "")).strip()
                 for e in evidence
-                if _DB_RE.search(str(e.get("detail", "")))
-                or "db" in str(e.get("detail", "")).lower()
-                or "pool" in str(e.get("detail", "")).lower()
-                or "timeout" in str(e.get("detail", "")).lower()
+                if isinstance(e, dict)
+                and (
+                    _DB_CONTEXT_RE.search(str(e.get("detail", "")))
+                    or _DB_CONTEXT_RE.search(str(e.get("source", "")))
+                )
             ]
-            if db_evidence:
+            narrative = _db_grounding_from_analysis(analysis)
+            if narrative:
+                answer = (
+                    "**Why the analysis points at the data / pool layer:**\n"
+                    + "\n".join(f"- {line}" for line in narrative)
+                )
+                if db_evidence:
+                    answer += (
+                        "\n\n**Evidence rows that mention DB / pool / timeouts:**\n"
+                        + "\n".join(f"- {x}" for x in db_evidence[:4] if x)
+                    )
+            elif db_evidence:
                 answer = (
                     "Database / pool involvement is supported by: "
                     + "; ".join(str(x) for x in db_evidence[:3] if x)
                     + ". Cross-check with connection-pool and timeout metrics in the timeline."
                 )
             else:
+                # User asked about Postgres/DB but structured evidence may only show auth/latency signals.
+                ev_lines = _format_evidence_answer(analysis)
                 answer = (
-                    "The analysis ties latency to **DB connection pressure** (pool / timeouts). "
-                    "See the **evidence** and **timeline** sections in the saved analysis, or ask "
-                    "\"What evidence supports this?\" for the bullet list."
+                    "The **saved analysis** does not name Postgres in the evidence bullets, but the narrative "
+                    "still ties the incident to **connection pressure / timeouts** (often the DB pool or a "
+                    "dependency behind auth). Here is what is actually on record:\n\n"
+                    + ev_lines
+                    + "\n\n_Ask \"What happened?\" for the root-cause narrative, or narrow to signals that "
+                    "mention pool/timeouts if your telemetry uses those terms._"
                 )
             sources = ["evidence", "timeline", "root_cause", "hydra.analysis"]
         elif _wants_next_steps(q):
