@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2026-05-05T14:10:00",
+    "service": "payments-service",
+    "version": "2026.05.05-rc3",
+    "change": "Updated retry logic for transient DB errors from 2 to 5 attempts."
+  },
+  {
+    "timestamp": "2026-05-05T13:58:00",
+    "service": "checkout-api",
+    "version": "2026.05.05-rc1",
+    "change": "Added request-id propagation for payment traces."
+  },
+  {
+    "timestamp": "2026-05-04T08:55:00",
+    "service": "auth-service",
+    "version": "2026.05.04-hotfix1",
+    "change": "Adjusted token verifier timeout threshold."
+  }
+]

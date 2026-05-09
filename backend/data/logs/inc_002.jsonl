@@ -1,0 +1,2 @@
+{"timestamp":"2026-05-04T09:05:12","service":"auth-service","level":"ERROR","message":"JWT iat validation failed due to node clock skew","trace_id":"auth-01"}
+{"timestamp":"2026-05-04T09:07:01","service":"api-gateway","level":"WARN","message":"Authentication retries increased","trace_id":"auth-02"}

@@ -1,0 +1,26 @@
+[
+  {
+    "timestamp": "2026-05-05T14:15:00",
+    "service": "payments-service",
+    "alert": "payments error rate above 8%",
+    "severity": "high"
+  },
+  {
+    "timestamp": "2026-05-05T14:17:00",
+    "service": "checkout-api",
+    "alert": "checkout p95 latency exceeded 1.8s",
+    "severity": "critical"
+  },
+  {
+    "timestamp": "2026-05-05T14:18:00",
+    "service": "db-proxy",
+    "alert": "db connection pool saturation above 95%",
+    "severity": "critical"
+  },
+  {
+    "timestamp": "2026-05-04T09:06:00",
+    "service": "auth-service",
+    "alert": "jwt validation failures increased",
+    "severity": "medium"
+  }
+]

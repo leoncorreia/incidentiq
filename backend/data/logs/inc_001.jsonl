@@ -1,0 +1,10 @@
+{"timestamp":"2026-05-05T14:09:51","service":"payments-service","level":"INFO","message":"Starting rollout for version 2026.05.05-rc3","trace_id":"trc-a100"}
+{"timestamp":"2026-05-05T14:10:13","service":"payments-service","level":"INFO","message":"Retry policy updated: max_retries=5","trace_id":"trc-a101"}
+{"timestamp":"2026-05-05T14:15:08","service":"payments-service","level":"ERROR","message":"Transient DB error, retry attempt=4 request_id=req-88f","trace_id":"abc123"}
+{"timestamp":"2026-05-05T14:16:31","service":"checkout-api","level":"WARN","message":"Downstream timeout waiting for payments-service","trace_id":"abc124"}
+{"timestamp":"2026-05-05T14:17:00","service":"payments-service","level":"ERROR","message":"DB connection timeout","trace_id":"abc125"}
+{"timestamp":"2026-05-05T14:17:24","service":"payments-service","level":"ERROR","message":"Latency budget exceeded p95=1940ms","trace_id":"abc126"}
+{"timestamp":"2026-05-05T14:17:58","service":"db-proxy","level":"ERROR","message":"Connection pool exhausted active=392 max=400","trace_id":"abc127"}
+{"timestamp":"2026-05-05T14:18:06","service":"payments-service","level":"ERROR","message":"Upstream saturation: too many concurrent retries","trace_id":"abc128"}
+{"timestamp":"2026-05-05T14:19:10","service":"checkout-api","level":"ERROR","message":"Checkout response timeout after 3s","trace_id":"abc129"}
+{"timestamp":"2026-05-05T14:21:43","service":"payments-service","level":"INFO","message":"Rollback initiated to version 2026.05.05-rc2","trace_id":"abc130"}

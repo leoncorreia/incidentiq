@@ -1,0 +1,38 @@
+[
+  {
+    "id": "inc_001",
+    "title": "Payments p95 latency spike",
+    "service": "payments-service",
+    "severity": "SEV-1",
+    "status": "resolved",
+    "started_at": "2026-05-05T14:17:00",
+    "resolved_at": "2026-05-05T14:42:00",
+    "summary": "Checkout latency increased rapidly due to downstream DB pressure.",
+    "tags": ["latency", "payments", "database"],
+    "related_services": ["payments-service", "checkout-api", "db-proxy"]
+  },
+  {
+    "id": "inc_002",
+    "title": "Auth token validation errors",
+    "service": "auth-service",
+    "severity": "SEV-2",
+    "status": "resolved",
+    "started_at": "2026-05-04T09:05:00",
+    "resolved_at": "2026-05-04T09:26:00",
+    "summary": "Clock skew on a node caused invalid JWT validation bursts.",
+    "tags": ["auth", "jwt", "clock-skew"],
+    "related_services": ["auth-service", "api-gateway"]
+  },
+  {
+    "id": "inc_003",
+    "title": "Catalog cache miss storm",
+    "service": "catalog-service",
+    "severity": "SEV-3",
+    "status": "resolved",
+    "started_at": "2026-05-03T11:40:00",
+    "resolved_at": "2026-05-03T12:00:00",
+    "summary": "Evicted cache keys increased upstream read load for 20 minutes.",
+    "tags": ["cache", "catalog", "performance"],
+    "related_services": ["catalog-service", "redis-cluster", "search-service"]
+  }
+]

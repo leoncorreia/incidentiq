@@ -1,0 +1,37 @@
+[
+  {
+    "timestamp": "2026-05-05T14:14:00",
+    "service": "payments-service",
+    "metric": "request_error_rate",
+    "value": 0.07,
+    "unit": "ratio"
+  },
+  {
+    "timestamp": "2026-05-05T14:17:00",
+    "service": "payments-service",
+    "metric": "latency_p95_ms",
+    "value": 1940,
+    "unit": "ms"
+  },
+  {
+    "timestamp": "2026-05-05T14:18:00",
+    "service": "db-proxy",
+    "metric": "db_pool_in_use_ratio",
+    "value": 0.98,
+    "unit": "ratio"
+  },
+  {
+    "timestamp": "2026-05-05T14:20:00",
+    "service": "checkout-api",
+    "metric": "latency_p95_ms",
+    "value": 2100,
+    "unit": "ms"
+  },
+  {
+    "timestamp": "2026-05-04T09:06:00",
+    "service": "auth-service",
+    "metric": "jwt_validation_failures_per_min",
+    "value": 220,
+    "unit": "count"
+  }
+]
