@@ -8,7 +8,7 @@ AI-assisted incident investigation: ingest logs, deploys, alerts, and runbooks; 
 | ----------- | ------------------------------------------------ |
 | `backend/`  | FastAPI API (`uvicorn app.main:app`)             |
 | `frontend/` | TanStack Start + Vite UI                         |
-| `DEPLOY.md` | GitHub, **Render** (API), and frontend hosting   |
+| `DEPLOY.md` | **Render** blueprint (`render.yaml`): API + Nitro web |
 
 ## Local dev
 

@@ -13,6 +13,7 @@ import {
   createWorkspaceIncident,
   getContextSources,
   getIncidents,
+  isWorkspaceIncidentListMode,
   getOperationalMemory,
   getRelatedIncidents,
   persistRunbookToHydra,
@@ -36,13 +37,22 @@ import { Button } from "@/components/ui/button";
 const consoleRouteApi = getRouteApi("/console");
 
 const DEMO_QUERY = "Why did latency spike at 2:17 PM?";
-const CONNECTOR_NAMES = ["Datadog", "Grafana", "Kubernetes", "CloudWatch", "PagerDuty", "GitHub Deploys"];
+const CONNECTOR_NAMES = [
+  "Datadog",
+  "Grafana",
+  "Kubernetes",
+  "CloudWatch",
+  "PagerDuty",
+  "GitHub Deploys",
+];
 
 function hydraSessionKey(incidentId: string) {
   return `incidentiq-hydra-session-${incidentId}`;
 }
 
-function mapConversationHistory(rows: Array<{ role: string; content: string }> | undefined): ChatMessage[] {
+function mapConversationHistory(
+  rows: Array<{ role: string; content: string }> | undefined,
+): ChatMessage[] {
   return (rows ?? []).map((m) => ({
     role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
     content: m.content,
@@ -51,20 +61,31 @@ function mapConversationHistory(rows: Array<{ role: string; content: string }> |
 
 function hasRemoteHydradbResume(resume: ChatStartResponse["hydradb_resume"]): boolean {
   if (!resume || typeof resume !== "object") return false;
-  return Boolean(
-    resume.hydra_cloud && (resume.knowledge != null || resume.memories != null),
-  );
+  return Boolean(resume.hydra_cloud && (resume.knowledge != null || resume.memories != null));
+}
+
+function extractPriorUserQuestions(
+  history: Array<{ role: string; content: string }> | undefined,
+  max = 4,
+): string[] {
+  if (!history?.length) return [];
+  return history
+    .filter((m) => m.role === "user")
+    .map((m) => m.content.trim())
+    .filter(Boolean)
+    .slice(-max);
 }
 
 export default function App() {
   const { demo } = consoleRouteApi.useSearch();
+  const workspaceOnly = isWorkspaceIncidentListMode(demo);
 
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loadingIncidents, setLoadingIncidents] = useState(true);
   const [incidentsError, setIncidentsError] = useState<string | null>(null);
 
   const [activeId, setActiveId] = useState<string | undefined>();
-  const [query, setQuery] = useState(() => (demo ? DEMO_QUERY : ""));
+  const [query, setQuery] = useState(() => (!workspaceOnly ? DEMO_QUERY : ""));
 
   const [analysis, setAnalysis] = useState<AnalyzeResponse | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -79,10 +100,14 @@ export default function App() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [showConnectors, setShowConnectors] = useState(false);
-  const [connectors, setConnectors] = useState<Array<{ name: string; status: "Connected" | "Syncing"; lastSynced: string }>>([]);
+  const [connectors, setConnectors] = useState<
+    Array<{ name: string; status: "Connected" | "Syncing"; lastSynced: string }>
+  >([]);
   const [memoryBanner, setMemoryBanner] = useState("Incident memory · HydraDB context layer");
   const [relatedIncidents, setRelatedIncidents] = useState<RelatedIncidentsResponse | null>(null);
-  const [operationalMemory, setOperationalMemory] = useState<OperationalMemoryResponse | null>(null);
+  const [operationalMemory, setOperationalMemory] = useState<OperationalMemoryResponse | null>(
+    null,
+  );
   const [cumulativeRecall, setCumulativeRecall] = useState({ knowledge: 0, memory: 0 });
   const [lastRecall, setLastRecall] = useState<{ knowledge: number; memory: number } | null>(null);
   const [memoryHints, setMemoryHints] = useState<Record<string, { resumeAvailable: boolean }>>({});
@@ -91,9 +116,15 @@ export default function App() {
     rootCause?: string | null;
     mitigation?: string | null;
     followupCount: number;
+    priorUserQuestions: string[];
   } | null>(null);
 
   const analysisCache = useRef(new Map<string, AnalyzeResponse>());
+  const activeIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   useEffect(() => {
     const raw = localStorage.getItem("incidentiq-connectors");
@@ -105,7 +136,9 @@ export default function App() {
         // ignore parse error and set defaults
       }
     }
-    setConnectors(CONNECTOR_NAMES.map((name) => ({ name, status: "Syncing", lastSynced: "Never" })));
+    setConnectors(
+      CONNECTOR_NAMES.map((name) => ({ name, status: "Syncing", lastSynced: "Never" })),
+    );
   }, []);
 
   const refreshContextSources = useCallback(async (incidentId: string) => {
@@ -135,21 +168,23 @@ export default function App() {
     const la = started.latest_analysis as AnalyzeResponse | null | undefined;
     const hist = started.conversation_history?.length ?? 0;
     if (started.has_analysis || hist > 0 || hasRemoteHydradbResume(started.hydradb_resume)) {
+      const priorUserQuestions = extractPriorUserQuestions(started.conversation_history);
       setContextBanner({
         visible: true,
         rootCause: la?.root_cause,
         mitigation: la?.recommended_mitigation?.immediate_mitigation,
         followupCount: hist,
+        priorUserQuestions,
       });
-      window.setTimeout(() => setContextBanner(null), 14000);
+      window.setTimeout(() => setContextBanner(null), 42000);
     } else {
       setContextBanner(null);
     }
   }, []);
 
   useEffect(() => {
-    setQuery(demo ? DEMO_QUERY : "");
-  }, [demo]);
+    setQuery(!workspaceOnly ? DEMO_QUERY : "");
+  }, [workspaceOnly]);
 
   useEffect(() => {
     setCumulativeRecall({ knowledge: 0, memory: 0 });
@@ -180,38 +215,65 @@ export default function App() {
   useEffect(() => {
     let cancel = false;
     (async () => {
+      setLoadingIncidents(true);
+      setIncidentsError(null);
       try {
+        const wsOnly = isWorkspaceIncidentListMode(demo);
         const list = await getIncidents({ demo });
         if (cancel) return;
+
+        if (!list.length) {
+          setIncidents([]);
+          setActiveId(undefined);
+          setLoadingIncidents(false);
+          return;
+        }
+
+        const pickDefault = () =>
+          !wsOnly ? (list.find((i) => i.id === "inc_001")?.id ?? list[0].id) : list[0].id;
+
+        const current = activeIdRef.current;
+        const resolvedId = current && list.some((i) => i.id === current) ? current : pickDefault();
+
         setIncidents(list);
-        if (demo && list.length) {
-          const demoId = list.find((i) => i.id === "inc_001")?.id ?? list[0].id;
-          setActiveId(demoId);
-          try {
-            const saved = localStorage.getItem(hydraSessionKey(demoId));
-            const started = await startIncidentChat({
-              incident_id: demoId,
-              session_id: saved || undefined,
-            });
-            if (cancel) return;
-            localStorage.setItem(hydraSessionKey(demoId), started.session_id);
-            setSessionId(started.session_id);
-            setSuggestedPrompts(started.suggested_prompts);
-            setMemoryBanner(started.hydra_context_status || "Incident memory · HydraDB");
-            setChatMessages(mapConversationHistory(started.conversation_history));
-            if (started.latest_analysis) {
-              analysisCache.current.set(demoId, started.latest_analysis as AnalyzeResponse);
-              setAnalysis(started.latest_analysis as AnalyzeResponse);
-            }
-            applyContextRestoredBanner(started);
-            await refreshContextSources(demoId);
-            await loadOperationalMemory(demoId);
-          } catch (e) {
-            if (!cancel) setChatError(e instanceof Error ? e.message : String(e));
+        setActiveId(resolvedId);
+
+        try {
+          const saved = localStorage.getItem(hydraSessionKey(resolvedId));
+          const started = await startIncidentChat({
+            incident_id: resolvedId,
+            session_id: saved || undefined,
+          });
+          if (cancel) return;
+          localStorage.setItem(hydraSessionKey(resolvedId), started.session_id);
+          setSessionId(started.session_id);
+          setSuggestedPrompts(started.suggested_prompts);
+          setMemoryBanner(started.hydra_context_status || "Incident memory · HydraDB");
+          setChatMessages(mapConversationHistory(started.conversation_history));
+          if (started.latest_analysis) {
+            analysisCache.current.set(resolvedId, started.latest_analysis as AnalyzeResponse);
+            setAnalysis(started.latest_analysis as AnalyzeResponse);
+          } else {
+            const cached = analysisCache.current.get(resolvedId);
+            setAnalysis(cached ?? null);
           }
+          applyContextRestoredBanner(started);
+          await refreshContextSources(resolvedId);
+          await loadOperationalMemory(resolvedId);
+        } catch (e) {
+          if (!cancel) setChatError(e instanceof Error ? e.message : String(e));
         }
       } catch (e) {
-        if (!cancel) setIncidentsError(e instanceof Error ? e.message : String(e));
+        if (!cancel) {
+          const raw = e instanceof Error ? e.message : String(e);
+          const hint =
+            raw.includes("Failed to fetch") ||
+            raw.includes("NetworkError") ||
+            raw.includes("Network request failed")
+              ? " Start the backend (uvicorn on port 10000). In dev, the UI uses /api → proxy to that port."
+              : "";
+          setIncidentsError(raw + hint);
+        }
       } finally {
         if (!cancel) setLoadingIncidents(false);
       }
@@ -245,47 +307,50 @@ export default function App() {
     };
   }, [activeId]);
 
-  const handleSelect = useCallback(async (inc: Incident) => {
-    setActiveId(inc.id);
-    setAnalysisError(null);
-    setChatError(null);
-    const cached = analysisCache.current.get(inc.id);
-    setAnalysis(cached ?? null);
-    try {
-      const saved = localStorage.getItem(hydraSessionKey(inc.id));
-      const started = await startIncidentChat({
-        incident_id: inc.id,
-        session_id: saved || undefined,
-      });
-      localStorage.setItem(hydraSessionKey(inc.id), started.session_id);
-      setSessionId(started.session_id);
-      setSuggestedPrompts(started.suggested_prompts);
-      setMemoryBanner(
-        started.hydra_context_status || "Previous investigation context loaded · HydraDB",
-      );
-      setChatMessages(mapConversationHistory(started.conversation_history));
-      applyContextRestoredBanner(started);
-      if (started.latest_analysis) {
-        analysisCache.current.set(inc.id, started.latest_analysis as AnalyzeResponse);
-        setAnalysis(started.latest_analysis as AnalyzeResponse);
-      } else {
-        setAnalysis(cached ?? null);
-      }
-      await refreshContextSources(inc.id);
-      await loadOperationalMemory(inc.id);
+  const handleSelect = useCallback(
+    async (inc: Incident) => {
+      setActiveId(inc.id);
+      setAnalysisError(null);
+      setChatError(null);
+      const cached = analysisCache.current.get(inc.id);
+      setAnalysis(cached ?? null);
       try {
-        const om = await getOperationalMemory(inc.id, false);
-        setMemoryHints((h) => ({ ...h, [inc.id]: { resumeAvailable: om.resume_available } }));
-      } catch {
-        /* ignore */
+        const saved = localStorage.getItem(hydraSessionKey(inc.id));
+        const started = await startIncidentChat({
+          incident_id: inc.id,
+          session_id: saved || undefined,
+        });
+        localStorage.setItem(hydraSessionKey(inc.id), started.session_id);
+        setSessionId(started.session_id);
+        setSuggestedPrompts(started.suggested_prompts);
+        setMemoryBanner(
+          started.hydra_context_status || "Previous investigation context loaded · HydraDB",
+        );
+        setChatMessages(mapConversationHistory(started.conversation_history));
+        applyContextRestoredBanner(started);
+        if (started.latest_analysis) {
+          analysisCache.current.set(inc.id, started.latest_analysis as AnalyzeResponse);
+          setAnalysis(started.latest_analysis as AnalyzeResponse);
+        } else {
+          setAnalysis(cached ?? null);
+        }
+        await refreshContextSources(inc.id);
+        await loadOperationalMemory(inc.id);
+        try {
+          const om = await getOperationalMemory(inc.id, false);
+          setMemoryHints((h) => ({ ...h, [inc.id]: { resumeAvailable: om.resume_available } }));
+        } catch {
+          /* ignore */
+        }
+      } catch (e) {
+        setChatError(e instanceof Error ? e.message : String(e));
+        setSessionId(null);
+        setSuggestedPrompts([]);
+        setChatMessages([]);
       }
-    } catch (e) {
-      setChatError(e instanceof Error ? e.message : String(e));
-      setSessionId(null);
-      setSuggestedPrompts([]);
-      setChatMessages([]);
-    }
-  }, [refreshContextSources, applyContextRestoredBanner, loadOperationalMemory]);
+    },
+    [refreshContextSources, applyContextRestoredBanner, loadOperationalMemory],
+  );
 
   const handleResumeFromHydra = useCallback(async () => {
     if (!activeIncident) return;
@@ -293,7 +358,7 @@ export default function App() {
   }, [activeIncident, handleSelect]);
 
   const handleCreateInvestigation = useCallback(async () => {
-    if (demo) return;
+    if (!workspaceOnly) return;
     setIncidentsError(null);
     try {
       const inc = await createWorkspaceIncident();
@@ -302,7 +367,7 @@ export default function App() {
     } catch (e) {
       setIncidentsError(e instanceof Error ? e.message : String(e));
     }
-  }, [demo, handleSelect]);
+  }, [workspaceOnly, handleSelect]);
 
   const handleAnalyze = useCallback(async () => {
     if (!activeId || !query.trim()) return;
@@ -330,7 +395,9 @@ export default function App() {
         setSessionId(res.session_id);
         localStorage.setItem(hydraSessionKey(activeId), res.session_id);
       }
-      setMemoryBanner(res.hydra_context_status || "HydraDB · analysis persisted to operational memory");
+      setMemoryBanner(
+        res.hydra_context_status || "HydraDB · analysis persisted to operational memory",
+      );
       analysisCache.current.set(activeId, res);
       setAnalysis(res);
       if (res.conversation_history?.length) {
@@ -386,7 +453,19 @@ export default function App() {
 
   const handleFilesUpload = useCallback(
     async (files: FileList | null) => {
-      if (!activeId || !files || files.length === 0) return;
+      if (!files || files.length === 0) return;
+      if (!activeId) {
+        if (loadingIncidents) {
+          setUploadError("Incidents are still loading — wait a second and try again.");
+        } else if (incidents.length === 0) {
+          setUploadError(
+            "No incidents available. Start the API on port 10000, use /console (seed data), or create a workspace investigation.",
+          );
+        } else {
+          setUploadError("Click an incident in the left list to select it, then upload again.");
+        }
+        return;
+      }
       setUploading(true);
       setUploadError(null);
       try {
@@ -406,7 +485,7 @@ export default function App() {
         setUploading(false);
       }
     },
-    [activeId, refreshContextSources, loadOperationalMemory],
+    [activeId, incidents.length, loadingIncidents, refreshContextSources, loadOperationalMemory],
   );
 
   const handleSyncRunbook = useCallback(
@@ -417,13 +496,18 @@ export default function App() {
     [activeId, sessionId],
   );
 
-  const connectSource = useCallback((name: string) => {
-    const updated = connectors.map((c) =>
-      c.name === name ? { ...c, status: "Connected" as const, lastSynced: new Date().toLocaleTimeString() } : c,
-    );
-    setConnectors(updated);
-    localStorage.setItem("incidentiq-connectors", JSON.stringify(updated));
-  }, [connectors]);
+  const connectSource = useCallback(
+    (name: string) => {
+      const updated = connectors.map((c) =>
+        c.name === name
+          ? { ...c, status: "Connected" as const, lastSynced: new Date().toLocaleTimeString() }
+          : c,
+      );
+      setConnectors(updated);
+      localStorage.setItem("incidentiq-connectors", JSON.stringify(updated));
+    },
+    [connectors],
+  );
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -441,6 +525,7 @@ export default function App() {
           rootCause={contextBanner.rootCause}
           mitigation={contextBanner.mitigation}
           followupCount={contextBanner.followupCount}
+          priorUserQuestions={contextBanner.priorUserQuestions}
           onDismiss={() => setContextBanner(null)}
         />
       )}
@@ -451,9 +536,10 @@ export default function App() {
           activeId={activeId}
           onSelect={handleSelect}
           loading={loadingIncidents}
-          workspaceMode={!demo}
-          onCreateInvestigation={!demo ? handleCreateInvestigation : undefined}
+          workspaceMode={workspaceOnly}
+          onCreateInvestigation={workspaceOnly ? handleCreateInvestigation : undefined}
           memoryHints={memoryHints}
+          loadError={incidentsError}
         />
 
         <main className="flex min-h-0 flex-col overflow-hidden">
@@ -461,9 +547,7 @@ export default function App() {
             {activeIncident ? (
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <div>
-                  <h1 className="text-lg font-semibold tracking-tight">
-                    {activeIncident.title}
-                  </h1>
+                  <h1 className="text-lg font-semibold tracking-tight">{activeIncident.title}</h1>
                   <p className="text-xs text-muted-foreground">
                     <span className="font-mono">{activeIncident.id}</span>
                     {" · "}
@@ -497,7 +581,8 @@ export default function App() {
               <div className="mt-3 rounded-xl border border-dashed border-border bg-card p-3">
                 <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
                   <Upload className="h-3.5 w-3.5" />
-                  Upload Context for <span className="font-mono text-foreground">{activeId || "incident"}</span>
+                  Upload Context for{" "}
+                  <span className="font-mono text-foreground">{activeId || "incident"}</span>
                 </div>
                 <label className="flex cursor-pointer flex-col items-center justify-center rounded-md border border-border bg-background px-4 py-6 text-center text-xs text-muted-foreground hover:bg-muted/40">
                   Drag and drop files or click to upload logs/deploys/alerts/runbooks/metrics
@@ -508,8 +593,14 @@ export default function App() {
                     onChange={(e) => void handleFilesUpload(e.target.files)}
                   />
                 </label>
-                {uploading && <p className="mt-2 text-xs text-muted-foreground">Parsing and loading context...</p>}
-                {uploadError && <p className="mt-2 text-xs text-[color:var(--sev-critical)]">{uploadError}</p>}
+                {uploading && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Parsing and loading context...
+                  </p>
+                )}
+                {uploadError && (
+                  <p className="mt-2 text-xs text-[color:var(--sev-critical)]">{uploadError}</p>
+                )}
               </div>
             )}
           </div>
@@ -536,7 +627,10 @@ export default function App() {
               </p>
               <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
                 {Object.entries(contextSources?.counts || {}).map(([k, v]) => (
-                  <div key={k} className="rounded-md border border-border/50 bg-background/50 px-2 py-1.5">
+                  <div
+                    key={k}
+                    className="rounded-md border border-border/50 bg-background/50 px-2 py-1.5"
+                  >
                     <span className="text-muted-foreground">{k}</span>{" "}
                     <span className="font-medium text-foreground">{v}</span>
                   </div>
@@ -553,19 +647,15 @@ export default function App() {
                       </span>
                     ))}
                   {connectors.every((c) => c.status !== "Connected") ? (
-                    <span className="text-[10px] text-muted-foreground">None — use Upload Context for demo data</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      None — use Upload Context for demo data
+                    </span>
                   ) : null}
                 </div>
               </div>
             </section>
-            <IncidentTimeline
-              events={analysis?.timeline ?? []}
-              loading={analyzing}
-            />
-            <CausalGraph
-              nodes={analysis?.graph_nodes ?? []}
-              edges={analysis?.graph_edges ?? []}
-            />
+            <IncidentTimeline events={analysis?.timeline ?? []} loading={analyzing} />
+            <CausalGraph nodes={analysis?.graph_nodes ?? []} edges={analysis?.graph_edges ?? []} />
           </div>
         </main>
 
@@ -592,25 +682,28 @@ export default function App() {
           <div className="w-full max-w-xl rounded-xl border border-border bg-card p-4 shadow-xl">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold">Connect Sources</h3>
-              <Button size="sm" variant="ghost" onClick={() => setShowConnectors(false)}>Close</Button>
+              <Button size="sm" variant="ghost" onClick={() => setShowConnectors(false)}>
+                Close
+              </Button>
             </div>
             <div className="space-y-2">
               {connectors.map((c) => (
-                <div key={c.name} className="flex items-center justify-between rounded-md border border-border p-2.5">
+                <div
+                  key={c.name}
+                  className="flex items-center justify-between rounded-md border border-border p-2.5"
+                >
                   <div className="flex items-center gap-2">
                     <Cloud className="h-4 w-4 text-muted-foreground" />
                     <div>
                       <p className="text-sm">{c.name}</p>
-                      <p className="text-[11px] text-muted-foreground">Last synced: {c.lastSynced}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Last synced: {c.lastSynced}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-muted-foreground">{c.status}</span>
-                    <Button
-                      size="sm"
-                      className="h-7"
-                      onClick={() => connectSource(c.name)}
-                    >
+                    <Button size="sm" className="h-7" onClick={() => connectSource(c.name)}>
                       <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
                       Connect
                     </Button>

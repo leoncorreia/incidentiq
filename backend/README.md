@@ -46,5 +46,5 @@ If `PIPESHIFT_API_KEY` is missing or the model call fails, the backend falls bac
 ```
 
 ## Deploy
-- Render config: `render.yaml`
+- Render (API + web): repository root `render.yaml` — see `../DEPLOY.md`
 - Docker image support: `Dockerfile`

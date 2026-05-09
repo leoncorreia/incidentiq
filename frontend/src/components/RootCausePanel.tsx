@@ -105,6 +105,30 @@ interface Props {
   relatedIncidents?: Array<Record<string, unknown>>;
 }
 
+function ChatRecallNote({ recall }: { recall: { knowledge: number; memory: number } }) {
+  const k = recall.knowledge;
+  const m = recall.memory;
+  if (k <= 0 && m <= 0) return null;
+  const parts: string[] = [];
+  if (k > 0) parts.push(`${k} knowledge`);
+  if (m > 0) parts.push(`${m} operational memory`);
+  const total = k + m;
+  const detail =
+    k > 0 && m > 0
+      ? "HydraDB context recall · uploaded knowledge + operational memory"
+      : k > 0
+        ? "Using uploaded incident knowledge"
+        : "Using recalled operational memory";
+  return (
+    <p className="mt-2 border-t border-border/45 pt-2 text-[10px] leading-snug text-muted-foreground">
+      <span className="text-foreground/80">{detail}</span>
+      <span className="mt-0.5 block font-mono text-[10px] text-muted-foreground/90">
+        {parts.join(" · ")} · {total} {total === 1 ? "result" : "results"}
+      </span>
+    </p>
+  );
+}
+
 function ConfidenceBar({ value }: { value: number }) {
   const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
   return (
@@ -208,6 +232,36 @@ export function RootCausePanel({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain p-5 touch-pan-y">
+        {(relatedIncidents?.length ?? 0) > 0 && (
+          <section className="mb-5 rounded-lg border border-border/60 bg-gradient-to-b from-muted/30 to-card/40 p-3 shadow-[var(--shadow-soft)] ring-1 ring-border/30">
+            <p className="mb-0.5 text-[11px] font-semibold tracking-tight text-foreground">
+              Related past incidents
+            </p>
+            <p className="mb-2.5 text-[10px] leading-relaxed text-muted-foreground">
+              Similar services and tags from workspace and seed data — reuse mitigations and
+              patterns across incidents.
+            </p>
+            <ul className="space-y-1.5">
+              {relatedIncidents!.slice(0, 5).map((r) => (
+                <li
+                  key={String(r.id)}
+                  className="rounded-md border border-border/50 bg-background/50 px-2.5 py-1.5 text-[11px] transition hover:bg-background/80"
+                >
+                  <span className="font-medium text-foreground">{String(r.title ?? r.id)}</span>
+                  <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                    {String(r.id)}
+                  </span>
+                  {typeof r.similarity_score === "number" ? (
+                    <span className="ml-2 text-[10px] tabular-nums text-muted-foreground">
+                      similarity {r.similarity_score}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {loading ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -234,9 +288,7 @@ export function RootCausePanel({
         ) : (
           <div className="space-y-6">
             <Section icon={Target} title="Root Cause">
-              <p className="text-sm leading-relaxed text-foreground">
-                {data.root_cause}
-              </p>
+              <p className="text-sm leading-relaxed text-foreground">{data.root_cause}</p>
               <ConfidenceBar value={data.confidence} />
             </Section>
 
@@ -248,7 +300,15 @@ export function RootCausePanel({
                   </p>
                   <p className="text-xs text-muted-foreground">
                     Follow-ups use saved analysis + HydraDB recall ·{" "}
-                    {incidentId ? <span className="font-mono text-foreground/90">{incidentId}</span> : "active incident"}
+                    {incidentId ? (
+                      <span className="font-mono text-foreground/90">{incidentId}</span>
+                    ) : (
+                      "active incident"
+                    )}
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/90">
+                    Replies cite operational memory when relevant — watch the footnote under each
+                    assistant message.
                   </p>
                 </div>
               </div>
@@ -270,7 +330,8 @@ export function RootCausePanel({
               <div className="max-h-56 space-y-2 overflow-y-auto rounded-md border border-border bg-background p-2.5">
                 {chatMessages.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
-                    Ask evidence, rollback, or postmortem questions here — scroll below for full mitigation detail.
+                    Ask evidence, rollback, or postmortem questions here — scroll below for full
+                    mitigation detail.
                   </p>
                 ) : (
                   chatMessages.map((msg, idx) => (
@@ -282,22 +343,13 @@ export function RootCausePanel({
                           : "mr-5 border border-border bg-card text-foreground"
                       }`}
                     >
-                      <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">{msg.role}</p>
+                      <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {msg.role}
+                      </p>
                       <p className="whitespace-pre-wrap">{msg.content}</p>
-                      {msg.role === "assistant" &&
-                        msg.recall &&
-                        msg.recall.knowledge + msg.recall.memory > 0 && (
-                          <p className="mt-2 border-t border-border/50 pt-2 text-[10px] leading-snug text-muted-foreground">
-                            <span className="text-foreground/70">Context recall</span> ·{" "}
-                            {msg.recall.knowledge > 0
-                              ? `${msg.recall.knowledge} from uploaded knowledge`
-                              : null}
-                            {msg.recall.knowledge > 0 && msg.recall.memory > 0 ? " · " : null}
-                            {msg.recall.memory > 0
-                              ? `${msg.recall.memory} from operational memory`
-                              : null}
-                          </p>
-                        )}
+                      {msg.role === "assistant" && msg.recall ? (
+                        <ChatRecallNote recall={msg.recall} />
+                      ) : null}
                     </div>
                   ))
                 )}
@@ -351,7 +403,9 @@ export function RootCausePanel({
                       <Siren className="h-3.5 w-3.5" />
                       Immediate Mitigation
                     </p>
-                    <p className="text-xs leading-relaxed text-foreground">{mitigation.immediate_mitigation}</p>
+                    <p className="text-xs leading-relaxed text-foreground">
+                      {mitigation.immediate_mitigation}
+                    </p>
                   </div>
 
                   <div className="rounded-md border border-[color:var(--sev-high)]/30 bg-[color:var(--sev-high)]/10 p-2.5">
@@ -359,7 +413,9 @@ export function RootCausePanel({
                       <AlertTriangle className="h-3.5 w-3.5" />
                       Short-Term Fix
                     </p>
-                    <p className="text-xs leading-relaxed text-foreground">{mitigation.short_term_fix}</p>
+                    <p className="text-xs leading-relaxed text-foreground">
+                      {mitigation.short_term_fix}
+                    </p>
                   </div>
 
                   <div className="rounded-md border border-[color:var(--sev-medium)]/30 bg-[color:var(--sev-medium)]/10 p-2.5">
@@ -367,7 +423,9 @@ export function RootCausePanel({
                       <Activity className="h-3.5 w-3.5" />
                       Long-Term Prevention
                     </p>
-                    <p className="text-xs leading-relaxed text-foreground">{mitigation.long_term_prevention}</p>
+                    <p className="text-xs leading-relaxed text-foreground">
+                      {mitigation.long_term_prevention}
+                    </p>
                   </div>
                 </div>
               </section>
@@ -396,10 +454,7 @@ export function RootCausePanel({
               <Section icon={AlertTriangle} title="Evidence">
                 <ul className="space-y-2">
                   {data.evidence.map((e, i) => (
-                    <li
-                      key={i}
-                      className="rounded-md border border-border bg-card p-2.5"
-                    >
+                    <li key={i} className="rounded-md border border-border bg-card p-2.5">
                       <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                         {e.source || e.type || "evidence"}
                       </p>
@@ -412,38 +467,10 @@ export function RootCausePanel({
 
             <Section icon={Lightbulb} title="Suggested Fix">
               <div className="rounded-md border border-accent/20 bg-accent/5 p-3">
-                <p className="text-sm leading-relaxed text-foreground">
-                  {data.suggested_fix}
-                </p>
+                <p className="text-sm leading-relaxed text-foreground">{data.suggested_fix}</p>
               </div>
             </Section>
           </div>
-        )}
-
-        {(relatedIncidents?.length ?? 0) > 0 && (
-          <section className="mt-6 rounded-lg border border-border/70 bg-card/50 p-3.5">
-            <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Related past incidents
-            </p>
-            <p className="mb-2 text-[10px] leading-relaxed text-muted-foreground">
-              Ranked from operational workspace memory and seed incidents (service · tags) — reuse mitigations across
-              time.
-            </p>
-            <ul className="space-y-2">
-              {relatedIncidents!.slice(0, 5).map((r) => (
-                <li
-                  key={String(r.id)}
-                  className="rounded-md border border-border/60 bg-background/60 px-2 py-1.5 text-[11px]"
-                >
-                  <span className="font-medium text-foreground">{String(r.title ?? r.id)}</span>
-                  <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">{String(r.id)}</span>
-                  {typeof r.similarity_score === "number" ? (
-                    <span className="ml-2 text-[10px] text-muted-foreground">· {r.similarity_score} match</span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          </section>
         )}
       </div>
 
@@ -463,7 +490,13 @@ export function RootCausePanel({
               <h3 id="runbook-dialog-title" className="text-sm font-semibold">
                 Generated runbook (Markdown)
               </h3>
-              <Button type="button" size="sm" variant="ghost" className="h-8" onClick={() => setRunbookOpen(false)}>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8"
+                onClick={() => setRunbookOpen(false)}
+              >
                 Close
               </Button>
             </div>
@@ -499,7 +532,9 @@ export function RootCausePanel({
                   {runbookHydraSyncing ? "Syncing…" : "Sync to HydraDB"}
                 </Button>
               )}
-              {runbookNotice && <span className="text-xs text-muted-foreground">{runbookNotice}</span>}
+              {runbookNotice && (
+                <span className="text-xs text-muted-foreground">{runbookNotice}</span>
+              )}
             </div>
           </div>
         </div>

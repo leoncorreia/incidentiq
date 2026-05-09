@@ -385,23 +385,29 @@ class HydraDBClient:
         return any(len(u.get(k, [])) > 0 for k in ("logs", "deploys", "alerts", "metrics", "runbooks"))
 
     def retrieve_incident_context(self, incident_id: str, tenant_id: str | None = None) -> Dict[str, Any]:
-        t = self._t(tenant_id)
-        if self._uploaded_has_data(incident_id, t):
-            incident = self._resolve_incident_row(incident_id, t)
-            u = self._store.get_upload_aggregate(t, incident_id)
-            return {
-                "incident": incident,
-                "logs": list(u.get("logs", [])),
-                "deploys": list(u.get("deploys", [])),
-                "alerts": list(u.get("alerts", [])),
-                "metrics": list(u.get("metrics", [])),
-                "runbooks": list(u.get("runbooks", [])),
-                "context_mode": "upload_only",
-            }
+        """Always start from bundled `data/` (logs, deploys, alerts, metrics, runbooks), then append SQLite uploads.
 
+        Previously, any upload replaced seed context entirely — so demo incidents under `backend/data/` vanished
+        after a single upload or stale aggregate rows.
+        """
+        t = self._t(tenant_id)
         row = self._resolve_incident_row(incident_id, t)
-        context = get_incident_context(incident_id, self.data_dir, incident_row=row)
-        return self._merge_uploaded_context(incident_id, context, t)
+        try:
+            base = get_incident_context(incident_id, self.data_dir, incident_row=row)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            logger.warning("Bundled incident context skipped for %s: %s", incident_id, exc)
+            base = {
+                "incident": row,
+                "logs": [],
+                "deploys": [],
+                "alerts": [],
+                "metrics": [],
+                "runbooks": [],
+            }
+        merged = self._merge_uploaded_context(incident_id, base, t)
+        if self._uploaded_has_data(incident_id, t):
+            merged["context_mode"] = "seed_plus_uploads"
+        return merged
 
     def store_uploaded_context(
         self,

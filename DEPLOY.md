@@ -1,37 +1,48 @@
-# Deploy IncidentIQ (standalone repo)
+# Deploy IncidentIQ on Render (API + Web)
 
-## 1. GitHub
+The repo is a monorepo: `backend/` (FastAPI) and `frontend/` (TanStack Start + **Nitro** Node server for production).
 
-This repository root contains `backend/` and `frontend/`.
+## Prerequisites
 
-```bash
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/<you>/incidentiq.git
-git push -u origin main
-```
+- GitHub repo connected to [Render](https://dashboard.render.com)
+- Do **not** commit `backend/.env` or `frontend/.env` (gitignored)
 
-Do not commit `backend/.env` or `frontend/.env.local` (they are gitignored).
+## One-click Blueprint
 
-## 2. Render — API (FastAPI)
+1. Render Dashboard → **New** → **Blueprint**
+2. Select this repository and branch (e.g. `main`)
+3. **Blueprint path:** `render.yaml` (repository root)
+4. Complete the flow. Render creates two web services:
+   - **`incidentiq-api`** — Python / FastAPI
+   - **`incidentiq-web`** — Node / Nitro (SSR + static assets)
 
-1. [Render Dashboard](https://dashboard.render.com) → **New** → **Blueprint** (or **Web Service**).
-2. Connect this **incidentiq** GitHub repo, branch `main`.
-3. **Blueprint path:** `backend/render.yaml`  
-   - **Web Service** alternative: **Root Directory** = `backend`, **Build** = `pip install -r requirements.txt`, **Start** = `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
-4. After deploy → **Environment**:
-   - **ALLOWED_ORIGINS** — production frontend URL(s), comma-separated, e.g. `https://your-app.vercel.app`
-   - **PIPESHIFT_***, **HYDRADB_*** as needed (see `backend/.env.example`).
+5. When prompted, set **sync: false** variables (or add them afterward under **Environment**):
 
-**Health check:** `GET /health`
+| Service           | Variable            | Value |
+|------------------|---------------------|--------|
+| `incidentiq-api` | `ALLOWED_ORIGINS`   | Your **web** URL, e.g. `https://incidentiq-web-xxxx.onrender.com` (no trailing slash). Comma-separate for multiple origins. |
+| `incidentiq-web` | `VITE_API_URL`      | Your **API** URL, e.g. `https://incidentiq-api-xxxx.onrender.com` (no trailing slash). |
 
-## 3. Frontend
+6. **Redeploy `incidentiq-web`** after setting `VITE_API_URL` so the **build** bakes the correct API base into the client bundle.
 
-Deploy `frontend/` to Vercel, Cloudflare Pages, etc. Set at **build** time:
+7. Optional: add `PIPESHIFT_*`, `HYDRADB_*` keys on **`incidentiq-api`** (see `backend/.env.example`).
 
-- `VITE_API_URL` = `https://<your-render-service>.onrender.com` (no trailing slash)
+## Smoke tests
 
-## 4. Smoke test
+- `GET https://<api-host>/health` → JSON with `"status":"ok"`
+- Open `https://<web-host>/` and `https://<web-host>/console` — incidents should load if the API URL and CORS are correct
 
-- Browser: frontend loads; API calls hit Render, not `localhost:10000`.
-- `GET https://<render-host>/health` → `{"status":"ok",...}`.
+## Debugging on Render
+
+- **API logs:** service `incidentiq-api` → **Logs** (look for uvicorn / Hydra / Pipeshift warnings)
+- **Web logs:** `incidentiq-web` → **Logs** (Nitro / SSR errors)
+- **CORS / empty incidents:** `ALLOWED_ORIGINS` on the API must **exactly** match the browser origin (scheme + host, no trailing slash). Mismatch → browser blocks `fetch`.
+- **Client still calls localhost:** `VITE_API_URL` was missing at **build** time — set it and **Clear build cache & deploy** on the web service.
+
+## Free tier
+
+Services spin down after inactivity; first request can take ~30–60s (cold start).
+
+## Local development
+
+Unchanged: run API on `:10000`, `cd frontend && npm run dev` (Vite proxies `/api` → `10000` when `VITE_API_URL` is unset). See `README.md`.

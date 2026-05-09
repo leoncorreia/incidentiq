@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,8 @@ from app.schemas import (
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
 ingestion_service = IngestionService(upload_root=BASE_DIR / "uploads")
 orchestrator = IncidentOrchestrator(
@@ -47,12 +50,36 @@ orchestrator = IncidentOrchestrator(
     hydradb_cloud_tenant_id=settings.hydradb_tenant_id or settings.hydradb_tenant,
 )
 
+if not (settings.hydradb_api_key or "").strip():
+    logger.warning(
+        "HYDRADB_API_KEY is empty — HydraDB Cloud is off; UI will show Local layer only. "
+        "If you pasted a key in the editor, save backend/.env to disk and restart uvicorn."
+    )
+elif not orchestrator.hydradb.is_hydra_cloud_active():
+    logger.warning(
+        "HYDRADB_API_KEY is set but HydraDB SDK did not initialize — check HYDRADB_BASE_URL "
+        "and HYDRADB_TENANT_ID; see logs above for SDK errors."
+    )
+if not (settings.pipeshift_api_key or "").strip():
+    logger.warning(
+        "PIPESHIFT_API_KEY is empty — incident analysis will fail until a key is set in backend/.env."
+    )
+
 app = FastAPI(title="IncidentIQ API", version="0.1.0")
+
+# Localhost + common LAN origins (judges often open the dev server via 192.168.x.x from another device).
+_CORS_LAN_REGEX = (
+    r"https?://("
+    r"(localhost|127\.0\.0\.1)(:\d+)?"
+    r"|(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r"|169\.254\.\d{1,3}\.\d{1,3})(:\d+)?"
+    r")$"
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=_CORS_LAN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -66,7 +93,11 @@ def _load_incidents() -> List[dict]:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "incidentiq-backend"}
+    return {
+        "status": "ok",
+        "service": "incidentiq-backend",
+        "hydra_cloud_active": orchestrator.hydradb.is_hydra_cloud_active(),
+    }
 
 
 @app.get("/incidents", response_model=List[Incident])

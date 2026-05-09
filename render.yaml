@@ -1,0 +1,50 @@
+# Render Blueprint: API (Python) + Web (Node / Nitro SSR)
+# Dashboard → New → Blueprint → connect repo → path: render.yaml (repo root)
+#
+# After first deploy, set these in each service (Environment):
+#   incidentiq-api  → ALLOWED_ORIGINS = https://<incidentiq-web-url>   (comma-separate if multiple)
+#   incidentiq-web  → VITE_API_URL     = https://<incidentiq-api-url>   (no trailing slash)
+# Then trigger a manual redeploy of incidentiq-web so the client bundle picks up VITE_API_URL.
+
+services:
+  - type: web
+    name: incidentiq-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: PIPESHIFT_API_KEY
+        sync: false
+      - key: PIPESHIFT_API_URL
+        sync: false
+      - key: PIPESHIFT_MODEL
+        sync: false
+      - key: HYDRADB_API_KEY
+        sync: false
+      - key: HYDRADB_TENANT
+        value: incidentiq-demo
+      - key: HYDRADB_TENANT_ID
+        sync: false
+      - key: HYDRADB_BASE_URL
+        value: https://api.hydradb.com
+
+  - type: web
+    name: incidentiq-web
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: node .output/server/index.mjs
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      - key: VITE_API_URL
+        sync: false
