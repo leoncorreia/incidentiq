@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from app.constants import SUGGESTED_PROMPTS
 from app.hydradb_client import HydraDBClient
+from app.pipeshift_client import PipeshiftClient
 
 
 def _recall_chunk_count(result: Any) -> int:
@@ -198,9 +199,15 @@ def _format_narrative_explanation(analysis: Dict[str, Any]) -> str:
 class FollowUpChatOrchestrator:
     """Follow-up reasoning grounded in HydraDB-persisted analysis and incident memory."""
 
-    def __init__(self, hydradb: HydraDBClient, tenant_id: str) -> None:
+    def __init__(
+        self,
+        hydradb: HydraDBClient,
+        tenant_id: str,
+        pipeshift: PipeshiftClient | None = None,
+    ) -> None:
         self.hydradb = hydradb
         self.tenant_id = tenant_id
+        self.pipeshift = pipeshift
 
     def handle_message(self, session_id: str, message: str) -> Dict[str, Any]:
         session = self.hydradb.get_session(session_id, self.tenant_id)
@@ -219,98 +226,127 @@ class FollowUpChatOrchestrator:
                 "recall_memory_chunks": 0,
             }
 
+        know = self.hydradb.recall_incident_knowledge(incident_id, message, tenant_id=self.tenant_id)
+        mem = self.hydradb.recall_incident_memory(incident_id, message, tenant_id=self.tenant_id)
+        recall_knowledge_chunks = _recall_chunk_count(know)
+        recall_memory_chunks = _recall_chunk_count(mem)
+        gk = HydraDBClient.format_recall_chunks(know, "Uploaded knowledge (HydraDB)")
+        gm = HydraDBClient.format_recall_chunks(mem, "Related memory (HydraDB)")
+        grounding_blocks = [b for b in (gk, gm) if b]
+        history = self.hydradb.retrieve_conversation_history(session_id, self.tenant_id)
+
+        used_llm_followup = False
         q = message.lower().strip()
         sources: list[str] = []
         answer: str
 
-        if "rollback" in q:
-            answer = _mitigation(analysis).get(
-                "immediate_mitigation",
-                "Rollback the most recent risky deploy for the affected service.",
+        if self.pipeshift:
+            llm_answer = self.pipeshift.followup_chat(
+                message,
+                incident_id,
+                analysis,
+                history,
+                gk or "",
+                gm or "",
             )
-            sources = ["recommended_mitigation.immediate_mitigation", "hydra.analysis", "timeline.deploy"]
-        elif "evidence" in q:
-            answer = _format_evidence_answer(analysis)
-            sources = ["evidence", "timeline", "hydra.analysis"]
-        elif "postmortem" in q:
-            mit = _mitigation(analysis)
-            answer = (
-                f"Incident {incident_id} postmortem summary:\n"
-                f"Root cause: {analysis.get('root_cause', 'N/A')}\n"
-                f"Blast radius: {analysis.get('blast_radius', 'N/A')}\n"
-                f"Immediate mitigation: {mit.get('immediate_mitigation', 'N/A')}\n"
-                f"Short-term fix: {mit.get('short_term_fix', 'N/A')}\n"
-                f"Long-term prevention: {mit.get('long_term_prevention', 'N/A')}"
-            )
-            sources = ["root_cause", "blast_radius", "recommended_mitigation", "hydra.analysis"]
-        elif _DB_RE.search(q):
-            evidence = analysis.get("evidence", [])
-            db_evidence = [
-                str(e.get("detail", "")).strip()
-                for e in evidence
-                if isinstance(e, dict)
-                and (
-                    _DB_CONTEXT_RE.search(str(e.get("detail", "")))
-                    or _DB_CONTEXT_RE.search(str(e.get("source", "")))
+            if llm_answer:
+                answer = llm_answer
+                sources = ["llm.followup", "hydra.analysis"]
+                if recall_knowledge_chunks:
+                    sources.append("hydra.knowledge_recall")
+                if recall_memory_chunks:
+                    sources.append("hydra.memory_recall")
+                used_llm_followup = True
+
+        if not used_llm_followup:
+            if "rollback" in q:
+                answer = _mitigation(analysis).get(
+                    "immediate_mitigation",
+                    "Rollback the most recent risky deploy for the affected service.",
                 )
-            ]
-            narrative = _db_grounding_from_analysis(analysis)
-            if narrative:
+                sources = ["recommended_mitigation.immediate_mitigation", "hydra.analysis", "timeline.deploy"]
+            elif "evidence" in q:
+                answer = _format_evidence_answer(analysis)
+                sources = ["evidence", "timeline", "hydra.analysis"]
+            elif "postmortem" in q:
+                mit = _mitigation(analysis)
                 answer = (
-                    "**Why the analysis points at the data / pool layer:**\n"
-                    + "\n".join(f"- {line}" for line in narrative)
+                    f"Incident {incident_id} postmortem summary:\n"
+                    f"Root cause: {analysis.get('root_cause', 'N/A')}\n"
+                    f"Blast radius: {analysis.get('blast_radius', 'N/A')}\n"
+                    f"Immediate mitigation: {mit.get('immediate_mitigation', 'N/A')}\n"
+                    f"Short-term fix: {mit.get('short_term_fix', 'N/A')}\n"
+                    f"Long-term prevention: {mit.get('long_term_prevention', 'N/A')}"
                 )
-                if db_evidence:
-                    answer += (
-                        "\n\n**Evidence rows that mention DB / pool / timeouts:**\n"
-                        + "\n".join(f"- {x}" for x in db_evidence[:4] if x)
+                sources = ["root_cause", "blast_radius", "recommended_mitigation", "hydra.analysis"]
+            elif _DB_RE.search(q):
+                evidence = analysis.get("evidence", [])
+                db_evidence = [
+                    str(e.get("detail", "")).strip()
+                    for e in evidence
+                    if isinstance(e, dict)
+                    and (
+                        _DB_CONTEXT_RE.search(str(e.get("detail", "")))
+                        or _DB_CONTEXT_RE.search(str(e.get("source", "")))
                     )
-            elif db_evidence:
+                ]
+                narrative = _db_grounding_from_analysis(analysis)
+                if narrative:
+                    answer = (
+                        "**Why the analysis points at the data / pool layer:**\n"
+                        + "\n".join(f"- {line}" for line in narrative)
+                    )
+                    if db_evidence:
+                        answer += (
+                            "\n\n**Evidence rows that mention DB / pool / timeouts:**\n"
+                            + "\n".join(f"- {x}" for x in db_evidence[:4] if x)
+                        )
+                elif db_evidence:
+                    answer = (
+                        "Database / pool involvement is supported by: "
+                        + "; ".join(str(x) for x in db_evidence[:3] if x)
+                        + ". Cross-check with connection-pool and timeout metrics in the timeline."
+                    )
+                else:
+                    # User asked about Postgres/DB but structured evidence may only show auth/latency signals.
+                    ev_lines = _format_evidence_answer(analysis)
+                    answer = (
+                        "The **saved analysis** does not name Postgres in the evidence bullets, but the narrative "
+                        "still ties the incident to **connection pressure / timeouts** (often the DB pool or a "
+                        "dependency behind auth). Here is what is actually on record:\n\n"
+                        + ev_lines
+                        + "\n\n_Ask \"What happened?\" for the root-cause narrative, or narrow to signals that "
+                        "mention pool/timeouts if your telemetry uses those terms._"
+                    )
+                sources = ["evidence", "timeline", "root_cause", "hydra.analysis"]
+            elif _wants_next_steps(q):
+                answer = _format_next_steps(analysis)
+                sources = ["recommended_mitigation", "suggested_fix", "hydra.analysis"]
+            elif _wants_narrative_explanation(q):
+                answer = _format_narrative_explanation(analysis)
+                sources = ["root_cause", "evidence", "blast_radius", "hydra.analysis"]
+            elif "monitor" in q:
                 answer = (
-                    "Database / pool involvement is supported by: "
-                    + "; ".join(str(x) for x in db_evidence[:3] if x)
-                    + ". Cross-check with connection-pool and timeout metrics in the timeline."
+                    "Monitor p95 latency, DB pool utilization, timeout/error rate, and retry amplification ratio for "
+                    f"{', '.join(analysis.get('affected_services', [])) or incident_id}."
                 )
+                sources = ["affected_services", "recommended_mitigation.long_term_prevention", "hydra.analysis"]
+            elif "prevent" in q:
+                answer = _mitigation(analysis).get(
+                    "long_term_prevention",
+                    "Introduce proactive alerts, canary rollouts, and retry circuit breakers.",
+                )
+                sources = ["recommended_mitigation.long_term_prevention", "hydra.analysis"]
             else:
-                # User asked about Postgres/DB but structured evidence may only show auth/latency signals.
-                ev_lines = _format_evidence_answer(analysis)
+                mit = _mitigation(analysis)
                 answer = (
-                    "The **saved analysis** does not name Postgres in the evidence bullets, but the narrative "
-                    "still ties the incident to **connection pressure / timeouts** (often the DB pool or a "
-                    "dependency behind auth). Here is what is actually on record:\n\n"
-                    + ev_lines
-                    + "\n\n_Ask \"What happened?\" for the root-cause narrative, or narrow to signals that "
-                    "mention pool/timeouts if your telemetry uses those terms._"
+                    "**Summary from saved analysis:**\n"
+                    f"- **Root cause:** {analysis.get('root_cause', 'N/A')}\n"
+                    f"- **Immediate action:** {mit.get('immediate_mitigation', 'N/A')}\n"
+                    f"- **Suggested fix:** {analysis.get('suggested_fix', 'N/A')}\n"
+                    "\n_Try: \"What evidence supports this?\", \"What to do next?\", or the suggested chips._"
                 )
-            sources = ["evidence", "timeline", "root_cause", "hydra.analysis"]
-        elif _wants_next_steps(q):
-            answer = _format_next_steps(analysis)
-            sources = ["recommended_mitigation", "suggested_fix", "hydra.analysis"]
-        elif _wants_narrative_explanation(q):
-            answer = _format_narrative_explanation(analysis)
-            sources = ["root_cause", "evidence", "blast_radius", "hydra.analysis"]
-        elif "monitor" in q:
-            answer = (
-                "Monitor p95 latency, DB pool utilization, timeout/error rate, and retry amplification ratio for "
-                f"{', '.join(analysis.get('affected_services', [])) or incident_id}."
-            )
-            sources = ["affected_services", "recommended_mitigation.long_term_prevention", "hydra.analysis"]
-        elif "prevent" in q:
-            answer = _mitigation(analysis).get(
-                "long_term_prevention",
-                "Introduce proactive alerts, canary rollouts, and retry circuit breakers.",
-            )
-            sources = ["recommended_mitigation.long_term_prevention", "hydra.analysis"]
-        else:
-            mit = _mitigation(analysis)
-            answer = (
-                "**Summary from saved analysis:**\n"
-                f"- **Root cause:** {analysis.get('root_cause', 'N/A')}\n"
-                f"- **Immediate action:** {mit.get('immediate_mitigation', 'N/A')}\n"
-                f"- **Suggested fix:** {analysis.get('suggested_fix', 'N/A')}\n"
-                "\n_Try: \"What evidence supports this?\", \"What to do next?\", or the suggested chips._"
-            )
-            sources = ["root_cause", "suggested_fix", "recommended_mitigation", "hydra.analysis"]
+                sources = ["root_cause", "suggested_fix", "recommended_mitigation", "hydra.analysis"]
 
         similar = session.get("similar_incidents") or []
         if similar:
@@ -319,14 +355,7 @@ class FollowUpChatOrchestrator:
                 answer += f"\n\nRelated past incidents (similarity): {similar_ids}."
                 sources.append("similar_incidents")
 
-        know = self.hydradb.recall_incident_knowledge(incident_id, message, tenant_id=self.tenant_id)
-        mem = self.hydradb.recall_incident_memory(incident_id, message, tenant_id=self.tenant_id)
-        recall_knowledge_chunks = _recall_chunk_count(know)
-        recall_memory_chunks = _recall_chunk_count(mem)
-        gk = HydraDBClient.format_recall_chunks(know, "Uploaded knowledge (HydraDB)")
-        gm = HydraDBClient.format_recall_chunks(mem, "Related memory (HydraDB)")
-        grounding_blocks = [b for b in (gk, gm) if b]
-        if grounding_blocks:
+        if not used_llm_followup and grounding_blocks:
             answer = answer + "\n\n---\n\n" + "\n\n".join(grounding_blocks)
             if gk:
                 sources.append("hydra.knowledge_recall")

@@ -71,6 +71,85 @@ class PipeshiftClient:
             return None
         return None
 
+    def followup_chat(
+        self,
+        message: str,
+        incident_id: str,
+        analysis: Dict[str, Any],
+        conversation_history: List[Dict[str, Any]],
+        recall_knowledge: str,
+        recall_memory: str,
+    ) -> str | None:
+        """Answer a follow-up question in plain text, grounded in saved analysis + recall + recent chat."""
+        if not self.api_key or not self.api_url:
+            return None
+
+        slim: Dict[str, Any] = {
+            "incident_id": incident_id,
+            "root_cause": analysis.get("root_cause"),
+            "confidence": analysis.get("confidence"),
+            "blast_radius": analysis.get("blast_radius"),
+            "suggested_fix": analysis.get("suggested_fix"),
+            "affected_services": analysis.get("affected_services"),
+            "recommended_mitigation": analysis.get("recommended_mitigation"),
+            "evidence": (analysis.get("evidence") or [])[:10],
+            "timeline": (analysis.get("timeline") or [])[:10],
+        }
+
+        hist_out: List[Dict[str, str]] = []
+        for turn in conversation_history[-12:]:
+            role = str(turn.get("role") or "")
+            content = str(turn.get("content") or "").strip()
+            if not content:
+                continue
+            hist_out.append({"role": role, "content": content[:3500]})
+
+        recall_parts: List[str] = []
+        if recall_knowledge.strip():
+            recall_parts.append(recall_knowledge.strip()[:8000])
+        if recall_memory.strip():
+            recall_parts.append(recall_memory.strip()[:8000])
+        recall_block = "\n\n".join(recall_parts) if recall_parts else ""
+
+        system_prompt = (
+            "You are an incident investigation assistant. The user asks a follow-up question.\n"
+            "Answer that question directly and specifically. Do not change the subject.\n"
+            "Ground every factual claim in the SAVED_ANALYSIS JSON, RECENT_CHAT, and/or HYDRA_RECALL text. "
+            "If something is not supported (e.g. they ask about Postgres but sources never mention it), say so clearly "
+            "and say what *is* supported instead.\n"
+            "Be concise (roughly 3–8 short paragraphs or bullets unless they ask for depth). "
+            "No JSON. No generic runbook filler. No 'see the evidence section' — quote or paraphrase the actual signals."
+        )
+        user_prompt = (
+            f"USER_QUESTION:\n{message.strip()}\n\n"
+            f"SAVED_ANALYSIS:\n{json.dumps(slim, ensure_ascii=True)}\n\n"
+            f"RECENT_CHAT:\n{json.dumps(hist_out, ensure_ascii=True)}\n\n"
+            f"HYDRA_RECALL:\n{recall_block or '(none)'}"
+        )
+
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.25,
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+        try:
+            with httpx.Client(timeout=45.0) as client:
+                response = client.post(self.api_url, json=body, headers=headers)
+                response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            if isinstance(content, str):
+                text = content.strip()
+                return text if text else None
+        except Exception:
+            return None
+        return None
+
     def _normalize_llm_result(self, result: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any] | None:
         incident = context["incident"]
         default_services = sorted(

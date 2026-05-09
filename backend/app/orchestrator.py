@@ -37,7 +37,7 @@ class IncidentOrchestrator:
             api_url=pipeshift_api_url,
         )
         self.tenant_id = hydradb_tenant
-        self.chat = FollowUpChatOrchestrator(self.hydradb, self.tenant_id)
+        self.chat = FollowUpChatOrchestrator(self.hydradb, self.tenant_id, self.pipeshift)
 
     def start_chat_session(self, incident_id: str, session_id: str | None = None) -> Dict[str, Any]:
         self.hydradb.retrieve_incident_context(incident_id, self.tenant_id)
