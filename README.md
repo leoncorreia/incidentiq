@@ -2,6 +2,8 @@
 
 AI-assisted incident investigation: ingest logs, deploys, alerts, and runbooks; analyze root cause; persist context with **HydraDB** (optional) and SQLite; follow-up chat grounded in operational memory.
 
+Video: https://drive.google.com/file/d/1JPzqQWc-sszqEfKminanshYPcNjSvKig/view
+
 ## Layout
 
 | Path        | Description                                      |
